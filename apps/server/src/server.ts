@@ -379,6 +379,7 @@ export function createGameServer(options: ServerOptions = {}) {
   const timers = new Map<string, NodeJS.Timeout>();
   const ackCache = new Map<string, CachedAck>();
   const chatMessages = new Map<string, number[]>();
+  const tableActionMessages = new Map<string, number[]>();
   let cleanupTimer: NodeJS.Timeout | undefined;
 
   app.get("/health", (_request, response) => {
@@ -530,6 +531,34 @@ export function createGameServer(options: ServerOptions = {}) {
   }
 
   io.on("connection", (socket) => {
+    socket.on("TABLE_ACTION", (raw: unknown) => {
+      const session = asSession(socket);
+      if (!session || !isRecord(raw)) return;
+      const room = store.get(session.roomCode);
+      const player = room?.players.find((item) => item.id === session.playerId && item.socketId === socket.id);
+      if (!room || !player) return;
+
+      const now = Date.now();
+      const recent = (tableActionMessages.get(socket.id) ?? []).filter((sentAt) => now - sentAt < 5_000);
+      if (recent.length >= 18) return;
+      recent.push(now);
+      tableActionMessages.set(socket.id, recent);
+
+      const rawLook = isRecord(raw.lookAt) ? raw.lookAt : {};
+      const lookKind = rawLook.kind;
+      let lookAt: { kind: string; playerId?: string } = { kind: "center" };
+      if (lookKind === "center" || lookKind === "documents" || lookKind === "cards" || lookKind === "left" || lookKind === "right") {
+        lookAt = { kind: lookKind };
+      } else if (lookKind === "player" && typeof rawLook.playerId === "string" && room.players.some((item) => item.id === rawLook.playerId)) {
+        lookAt = { kind: "player", playerId: rawLook.playerId };
+      }
+
+      const gestures = new Set(["wave", "point", "thinking", "shrug", "agree"]);
+      const gesture = typeof raw.gesture === "string" && gestures.has(raw.gesture) ? raw.gesture : null;
+      room.lastActivityAt = now;
+      io.to(room.code).emit("TABLE_ACTION", { playerId: player.id, lookAt, gesture, updatedAt: now });
+    });
+
     socket.on("CREATE_ROOM", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "CREATE_ROOM", raw, ack, "lobby", (envelope) => {
       if (asSession(socket)) throw new RuleError("ALREADY_IN_ROOM", "غادر الغرفة الحالية قبل إنشاء غرفة أخرى");
       const displayName = cleanDisplayName(envelope.displayName);
@@ -752,6 +781,7 @@ export function createGameServer(options: ServerOptions = {}) {
     }));
 
     socket.on("disconnect", () => {
+      tableActionMessages.delete(socket.id);
       const session = asSession(socket);
       if (!session) return;
       const room = store.get(session.roomCode);

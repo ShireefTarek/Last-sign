@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { io, type Socket } from "socket.io-client";
 import { CARD_SOURCE, finalScore } from "@akher-tawqee/game-engine";
+import type { TablePose, TablePoseChange, TableSeat } from "./TableScene";
+
+const TableScene = lazy(() => import("./TableScene").then((module) => ({ default: module.TableScene })));
+const StoryCutscene = lazy(() => import("./StoryCutscene").then((module) => ({ default: module.StoryCutscene })));
 
 type RoomPlayerView = {
   playerId: string;
@@ -166,6 +170,9 @@ export default function App() {
   const [stanceKind, setStanceKind] = useState<"pass" | "trust" | "doubt">("pass");
   const [stanceTarget, setStanceTarget] = useState("");
   const [shareNotice, setShareNotice] = useState("");
+  const [tablePoses, setTablePoses] = useState<Record<string, TablePose>>({});
+  const [storySceneKey, setStorySceneKey] = useState("");
+  const seenStoryRef = useRef("");
 
   const inviteCodeFromUrl = useMemo(() => {
     const match = window.location.pathname.match(/^\/join\/([A-Za-z0-9]{6})\/?$/);
@@ -239,12 +246,19 @@ export default function App() {
     const onRoom = (nextRoom: RoomView) => setRoom(nextRoom);
     const onPrivate = (next: PrivateView) => setPrivateState(next);
     const onChat = (message: RoomMessage) => setChatMessages((messages) => [...messages.slice(-29), message]);
+    const onTableAction = (value: unknown) => {
+      if (typeof value !== "object" || value === null) return;
+      const pose = value as TablePose;
+      if (typeof pose.playerId !== "string" || typeof pose.updatedAt !== "number" || !pose.lookAt) return;
+      setTablePoses((current) => ({ ...current, [pose.playerId]: pose }));
+    };
     const onValidationError = (payload: { message?: string }) => setError(payload.message ?? "تعذر تنفيذ الطلب");
     connection.on("connect", onConnect);
     connection.on("disconnect", onDisconnect);
     connection.on("ROOM_SNAPSHOT", onRoom);
     connection.on("PLAYER_PRIVATE_SNAPSHOT", onPrivate);
     connection.on("PUBLIC_CHAT_MESSAGE", onChat);
+    connection.on("TABLE_ACTION", onTableAction);
     connection.on("VALIDATION_ERROR", onValidationError);
     connection.connect();
     return () => {
@@ -253,10 +267,25 @@ export default function App() {
       connection.off("ROOM_SNAPSHOT", onRoom);
       connection.off("PLAYER_PRIVATE_SNAPSHOT", onPrivate);
       connection.off("PUBLIC_CHAT_MESSAGE", onChat);
+      connection.off("TABLE_ACTION", onTableAction);
       connection.off("VALIDATION_ERROR", onValidationError);
       connection.disconnect();
     };
   }, [inviteCodeFromUrl]);
+
+  const sendTablePose = useCallback((change: TablePoseChange) => {
+    const playerId = privateState?.playerId;
+    if (!playerId || !socket?.connected) return;
+    const previous = tablePoses[playerId];
+    const pose: TablePose = {
+      playerId,
+      lookAt: change.lookAt ?? previous?.lookAt ?? { kind: "center" },
+      gesture: change.gesture === undefined ? previous?.gesture ?? null : change.gesture,
+      updatedAt: Date.now(),
+    };
+    setTablePoses((current) => ({ ...current, [playerId]: pose }));
+    socket.emit("TABLE_ACTION", { lookAt: pose.lookAt, gesture: pose.gesture });
+  }, [privateState?.playerId, socket, tablePoses]);
 
   const saveRoom = (response: AckResponse) => {
     if (!response.ok || !response.data?.room) return false;
@@ -326,7 +355,27 @@ export default function App() {
 
   const currentPlayer = room?.players.find((player) => player.playerId === privateState?.playerId);
   const game = room?.game;
+  const tableSeats: TableSeat[] = useMemo(() => room?.players.map((player) => ({
+    playerId: player.playerId,
+    displayName: player.displayName,
+    seatIndex: player.seatIndex,
+    connected: player.connected,
+    isYou: player.playerId === privateState?.playerId,
+  })) ?? [], [room?.players, privateState?.playerId]);
   const showLanding = !room;
+
+  useEffect(() => {
+    const gameId = game?.gameId;
+    const roundIndex = game?.roundIndex;
+    if (!gameId || roundIndex === undefined) return;
+    const sceneKey = `${gameId}:${roundIndex}`;
+    if (seenStoryRef.current === sceneKey) return;
+    const storageKey = `akher:story:${sceneKey}`;
+    seenStoryRef.current = sceneKey;
+    if (sessionStorage.getItem(storageKey)) return;
+    sessionStorage.setItem(storageKey, "seen");
+    setStorySceneKey(sceneKey);
+  }, [game?.gameId, game?.roundIndex]);
 
   return (
     <div className={`app-shell ${largeText ? "large-text" : ""} ${reduceMotion ? "reduce-motion" : ""}`}>
@@ -385,6 +434,9 @@ export default function App() {
         {room && room.status === "lobby" && (
           <Lobby
             room={room}
+            tableSeats={tableSeats}
+            poses={tablePoses}
+            onPose={sendTablePose}
             currentPlayer={currentPlayer}
             displayName={displayName}
             setDisplayName={setDisplayName}
@@ -398,10 +450,29 @@ export default function App() {
           />
         )}
 
-        {room && room.status !== "lobby" && game && (
+        {room && room.status !== "lobby" && game && storySceneKey === `${game.gameId}:${game.roundIndex}` && (
+          <Suspense fallback={<div className="table-scene-loading story-loading">يُفتح ملفّ العائلة...</div>}>
+            <StoryCutscene
+              key={storySceneKey}
+              players={tableSeats}
+              lots={game.lots}
+              roundIndex={game.roundIndex}
+              localPlayerId={privateState?.playerId}
+              localHand={privateState?.game?.hand ?? []}
+              poses={tablePoses}
+              onPose={sendTablePose}
+              onClose={() => setStorySceneKey("")}
+            />
+          </Suspense>
+        )}
+
+        {room && room.status !== "lobby" && game && storySceneKey !== `${game.gameId}:${game.roundIndex}` && (
           <GameRoom
             room={room}
             game={game}
+            tableSeats={tableSeats}
+            tablePoses={tablePoses}
+            onTablePose={sendTablePose}
             privateState={privateState}
             currentPlayer={currentPlayer}
             busy={busy}
@@ -454,6 +525,9 @@ export default function App() {
 
 function Lobby(props: {
   room: RoomView;
+  tableSeats: TableSeat[];
+  poses: Record<string, TablePose>;
+  onPose: (change: TablePoseChange) => void;
   currentPlayer: RoomPlayerView | undefined;
   displayName: string;
   setDisplayName: (value: string) => void;
@@ -478,6 +552,12 @@ function Lobby(props: {
         <button className="secondary-button quiet" type="button" onClick={props.onCopyCode}>نسخ الرمز</button>
         <button className="secondary-button quiet" type="button" onClick={props.onShare}>مشاركة ↗</button>
         {props.shareNotice && <span className="share-notice" role="status">{props.shareNotice}</span>}
+      </div>
+      <div className="lobby-table-scene">
+        <div className="scene-heading-copy"><span className="section-kicker">المشهد الحي</span><h2>كل وريث له مقعد وصوت ونظرة</h2><p>اختبروا الطاولة قبل بدء الجولة؛ الشخصيات تلتفت وتتحرك معكم.</p></div>
+        <Suspense fallback={<div className="table-scene-loading">يُجهّز المجلس...</div>}>
+          <TableScene players={props.tableSeats} localPlayerId={props.currentPlayer?.playerId} poses={props.poses} onPose={props.onPose} interactive />
+        </Suspense>
       </div>
       <div className="lobby-columns">
         <section className="paper-panel seats-panel">
@@ -517,6 +597,9 @@ function Lobby(props: {
 function GameRoom(props: {
   room: RoomView;
   game: GameView;
+  tableSeats: TableSeat[];
+  tablePoses: Record<string, TablePose>;
+  onTablePose: (change: TablePoseChange) => void;
   privateState: PrivateView | null;
   currentPlayer: RoomPlayerView | undefined;
   busy: boolean;
@@ -619,6 +702,20 @@ function GameRoom(props: {
       </div>
       <div className="game-layout">
         <div className="game-main-column">
+          <section className="table-play-area">
+            <div className="scene-heading-copy"><span className="section-kicker">مجلس الورثة · جولة {game.roundIndex}</span><h2>انظر إلى من حولك قبل أن تتكلم</h2></div>
+            <Suspense fallback={<div className="table-scene-loading">يُجهّز المجلس...</div>}>
+              <TableScene
+                players={props.tableSeats}
+                lots={game.lots}
+                localPlayerId={props.privateState?.playerId}
+                localHand={props.privateState?.game?.hand ?? []}
+                poses={props.tablePoses}
+                onPose={props.onTablePose}
+                interactive
+              />
+            </Suspense>
+          </section>
           <section className="lot-grid" aria-label="قطع الجولة">
             {game.lots.map((lot) => <article className={`lot-card ${lot.status !== "open" ? "lot-settled" : ""}`} key={lot.id}>
               <div className="lot-label"><span>القطعة {lot.id}</span><span className="lot-seal" aria-hidden="true">✦</span></div>
