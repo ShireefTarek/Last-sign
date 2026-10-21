@@ -1,61 +1,65 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { getStory } from "@akher-tawqee/game-engine";
 import { TableScene, type TableLot, type TablePose, type TablePoseChange, type TableSeat } from "./TableScene";
 
-const openingBeats = [
-  {
-    eyebrow: "الليلة الأولى · مكتب العائلة",
-    title: "رحل منصور باشا، وبقي الملف مفتوحاً.",
-    copy: "في آخر وصاياه، دعا الورثة إلى مجلسه. لا مفاتيح للخروج قبل أن يُحسم أمر التركة.",
-    mark: "١",
-  },
-  {
-    eyebrow: "ستة ملفات · أختام محدودة",
-    title: "كل قطعة تحمل وجهاً من الحكاية.",
-    copy: "الوثائق أمامكم، والوعود بينكم. راقبوا النظرات؛ فكلمة واحدة قد تغيّر المزايدة.",
-    mark: "٢",
-  },
-  {
-    eyebrow: "المشهد الأخير · آخر توقيع",
-    title: "في النهاية، سيبقى توقيع واحد.",
-    copy: "تفاوضوا، اختاروا ما تثقون به، واكتبوا الفصل الأخير من إرث العائلة.",
-    mark: "٣",
-  },
-];
-
-const roundBeats = [
-  { eyebrow: "الجولة الثانية · أثر الأختام", title: "بدأت الوعود تتعارض.", copy: "كل ختم ينتقل إلى يدٍ جديدة يغيّر ميزان المجلس. من يراقب الورق، ومن يراقب الورثة؟", mark: "٢" },
-  { eyebrow: "الجولة الثالثة · رسالة في الدرج", title: "ظهرت ورقة لم تكن في الملف.", copy: "خطّ منصور باشا ملاحظة قصيرة عن القطعة الأثمن. الآن صار الصمت نفسه موضع شك.", mark: "٣" },
-  { eyebrow: "الجولة الرابعة · حديث الممر", title: "وصلت الإشاعة إلى الطاولة.", copy: "حكاية قديمة تربط أحد الورثة بالختم المفقود. لا أحد يملك الدليل، لكن الجميع صار يقرأ الوجوه.", mark: "٤" },
-  { eyebrow: "الجولة الخامسة · الوصية الناقصة", title: "انكشف شرطٌ لم يقرأه أحد.", copy: "بين السطور، ربطت الوصية مصير قطعةٍ بوعدٍ قُطع في المجلس. بقي أن نعرف من سيلتزم به.", mark: "٥" },
-  { eyebrow: "الجولة السادسة · ما قبل الأخير", title: "لم يبقَ للثقة مكانٌ واسع.", copy: "اقتربت الأختام من أصحابها، وبدأت التحالفات تتبدل. الحركة التالية قد تحسم مصير الإرث.", mark: "٦" },
-  { eyebrow: "الجولة السابعة · آخر توقيع", title: "الملف ينتظر اسماً واحداً.", copy: "هذه آخر فرصة لتغيير الموازين. بعد قفل العروض، ستُقرأ الوعود أمام الجميع.", mark: "٧" },
-];
+type Story = ReturnType<typeof getStory>;
+type StoryChapter = "opening" | "middle" | "ending";
 
 export function StoryCutscene(props: {
+  story: Story;
+  chapter: StoryChapter;
+  winnerName?: string | undefined;
+  scandal: number;
   players: TableSeat[];
   lots: TableLot[];
-  roundIndex: number;
   localPlayerId?: string | undefined;
   localHand: number[];
+  localHandLabels: string[];
   poses: Record<string, TablePose>;
   onPose: (change: TablePoseChange) => void;
   onClose: () => void;
 }) {
-  const [beatIndex, setBeatIndex] = useState(0);
-  const storyBeats = props.roundIndex <= 1 ? openingBeats : [roundBeats[Math.min(props.roundIndex - 2, roundBeats.length - 1)]!];
-  const beat = storyBeats[beatIndex]!;
+  const [speaking, setSpeaking] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState("");
+  const closeRef = useRef(props.onClose);
+  closeRef.current = props.onClose;
+  const scene = useMemo(() => {
+    if (props.chapter === "opening") return { eyebrow: `قصة جديدة · ${props.story.genre}`, title: `الليلة بدأت في «${props.story.title}»`, copy: props.story.opening, action: "ادخلوا المجلس" };
+    if (props.chapter === "middle") return { eyebrow: `نص الحكاية · ${props.story.title}`, title: "اللي حصل قلب كل التوقعات.", copy: props.story.middle, action: "كمّلوا" };
+    const ending = props.scandal >= 6 ? "الفضيحة وصلت لآخرها، ومحدش هيخرج من المجلس بنفس الأسرار اللي دخل بيها." : "كل اختيار اتسجل، وكل ورقة أخيراً لقت صاحبها.";
+    return { eyebrow: `آخر الحكاية · ${props.story.title}`, title: `المزاد كسبه ${props.winnerName ?? "أحد الورثة"}… بس دي مش الحكاية كلها.`, copy: `${props.story.twist} ${ending}`, action: "اقفل الملف" };
+  }, [props.chapter, props.scandal, props.story, props.winnerName]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      if (beatIndex < storyBeats.length - 1) setBeatIndex((current) => current + 1);
-      else props.onClose();
-    }, 6200);
+    const timer = window.setTimeout(() => closeRef.current(), props.chapter === "ending" ? 15_000 : 12_000);
     return () => window.clearTimeout(timer);
-  }, [beatIndex]);
+  }, [props.chapter]);
 
-  const continueStory = () => {
-    if (beatIndex < storyBeats.length - 1) setBeatIndex((current) => current + 1);
-    else props.onClose();
+  useEffect(() => () => {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  }, []);
+
+  const speak = () => {
+    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+      setVoiceNotice("المتصفح ده مش بيدعم القراءة الصوتية.");
+      return;
+    }
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    const voices = window.speechSynthesis.getVoices();
+    const voice = voices.find((item) => item.lang.toLowerCase() === "ar-eg")
+      ?? voices.find((item) => item.lang.toLowerCase().startsWith("ar"));
+    const utterance = new SpeechSynthesisUtterance(`${scene.title}. ${scene.copy}`);
+    utterance.lang = voice?.lang ?? "ar-EG";
+    utterance.rate = 0.92;
+    if (voice) utterance.voice = voice;
+    utterance.onstart = () => { setSpeaking(true); setVoiceNotice(voice ? "" : "الصوت العربي المتاح من جهازك هيُستخدم لو موجود."); };
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => { setSpeaking(false); setVoiceNotice("ماقدرناش نشغّل الصوت على الجهاز ده."); };
+    window.speechSynthesis.speak(utterance);
   };
 
   return (
@@ -65,24 +69,28 @@ export function StoryCutscene(props: {
         lots={props.lots}
         localPlayerId={props.localPlayerId}
         localHand={props.localHand}
+        localHandLabels={props.localHandLabels}
         poses={props.poses}
         onPose={props.onPose}
         cinematic
         interactive={false}
       />
       <div className="story-film-shade" aria-hidden="true" />
-      <div className="story-vignette-top"><span className="brand-seal" aria-hidden="true">✦</span><span>آخر توقيع</span><small>حكاية إرثٍ لم يُحسم</small></div>
-      <div className="story-caption" key={beatIndex}>
-        <div className="story-caption-meta"><span>{beat.mark}</span><p>{beat.eyebrow}</p></div>
-        <h1 id="story-title">{beat.title}</h1>
-        <p className="story-caption-copy">{beat.copy}</p>
-        <div className="story-progress" aria-label={`المشهد ${beatIndex + 1} من ${storyBeats.length}`}>
-          {storyBeats.map((item, index) => <i className={index <= beatIndex ? "is-current" : ""} key={item.mark} />)}
+      <div className="story-vignette-top"><span className="brand-seal" aria-hidden="true">✦</span><span>آخر توقيع</span><small>{props.story.genre} · قصة بتتغيّر مع لعبكم</small></div>
+      <article className="story-caption" key={props.chapter}>
+        <div className="story-caption-meta"><span>{props.chapter === "opening" ? "١" : props.chapter === "middle" ? "٢" : "٣"}</span><p>{scene.eyebrow}</p></div>
+        <h1 id="story-title">{scene.title}</h1>
+        <p className="story-caption-copy">{scene.copy}</p>
+        <div className="story-progress" aria-label="بداية ووسط ونهاية الحكاية">
+          {(["opening", "middle", "ending"] as const).map((chapter) => <i className={["opening", "middle", "ending"].indexOf(props.chapter) >= ["opening", "middle", "ending"].indexOf(chapter) ? "is-current" : ""} key={chapter} />)}
         </div>
-      </div>
+      </article>
       <div className="story-cutscene-actions">
-        <button type="button" className="story-skip" onClick={props.onClose}>تخطي المشهد</button>
-        <button type="button" className="primary-button" onClick={continueStory}>{beatIndex === storyBeats.length - 1 ? "ابدأ الجولة" : "تابع الحكاية"}<span aria-hidden="true">↗</span></button>
+        <div className="story-voice-action">
+          <button type="button" className="story-skip" onClick={speak}>{speaking ? "وقّف الصوت" : "اسمع الحكاية"}</button>
+          {voiceNotice && <small role="status">{voiceNotice}</small>}
+        </div>
+        <button type="button" className="primary-button" onClick={props.onClose}>{scene.action}<span aria-hidden="true">↗</span></button>
       </div>
     </section>
   );

@@ -144,6 +144,7 @@ export function createGameState(input: {
     lotDeckCursor: 0,
     lots: [],
     players,
+    contractBreachHistory: [],
     events: [],
     phaseDeadlineAt: undefined,
     finalRoundIndex: undefined,

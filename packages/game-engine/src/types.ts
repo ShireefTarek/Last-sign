@@ -6,6 +6,7 @@ export type GamePhase =
   | "wager-commit"
   | "negotiation"
   | "final-action"
+  | "card-response"
   | "resolution"
   | "round-summary"
   | "complete";
@@ -17,6 +18,7 @@ export interface RoomSettings {
   roundLimit: number;
   chatEnabled: boolean;
   negotiationSeconds: number;
+  storyId?: string;
   teamSizes?: number[];
 }
 
@@ -32,6 +34,7 @@ export interface Declaration {
   alternateLotId?: string;
   bidBand?: "0-1" | "2-3";
   stance?: { kind: "trust" | "doubt"; targetPlayerId: string };
+  illusionStance?: "trust" | "doubt";
   /** Private choice used only by card 23; omitted from public declaration projections. */
   hiddenField?: "targetLotId" | "bidBand" | "stance";
 }
@@ -108,6 +111,44 @@ export interface GameEvent {
   payload: Record<string, unknown>;
 }
 
+export interface CardResponse {
+  sourcePlayerId: string;
+  targetPlayerId: string;
+  cardId: 33 | 39 | 42 | 45 | 52 | 58;
+  effectCardId?: number;
+  choice?: "pay" | "reveal-card" | "reveal-category" | "suspicion" | "reflect" | "allow" | "defer" | "cancel";
+  revealedCardId?: number;
+  resolved: boolean;
+}
+
+export interface PendingPressureEffect {
+  sourcePlayerId: string;
+  targetPlayerId: string;
+  sourceCardId: 34 | 36;
+  kind: "influence" | "suspicion";
+  amount: 1;
+  dueRoundIndex: number;
+}
+
+export type FormalContractCondition =
+  | { kind: "no-bid"; playerId: string; lotId: string }
+  | { kind: "different-lots" }
+  | { kind: "transfer"; fromPlayerId: string; toPlayerId: string; amount: number };
+
+export interface FormalContract {
+  proposerPlayerId: string;
+  targetPlayerId: string;
+  condition: FormalContractCondition;
+  status: "pending" | "accepted" | "declined" | "fulfilled" | "breached" | "voided";
+  breachPlayerIds?: string[];
+}
+
+export interface ContractBreachRecord {
+  roundIndex: number;
+  breacherPlayerId: string;
+  victimPlayerId: string;
+}
+
 export interface GameState {
   gameId: string;
   mode: GameMode;
@@ -126,6 +167,10 @@ export interface GameState {
   lotDeckCursor: number;
   lots: LotState[];
   players: GamePlayerState[];
+  cardResponses?: CardResponse[];
+  formalContract?: FormalContract | undefined;
+  contractBreachHistory?: ContractBreachRecord[];
+  pendingPressureEffects?: PendingPressureEffect[];
   events: GameEvent[];
   phaseDeadlineAt: number | undefined;
   paused: boolean;
@@ -156,6 +201,7 @@ export interface BidResolution {
 export interface LotAuctionResult {
   lotId: string;
   winnerPlayerId?: string;
+  cardTieBreakPlayerId?: string;
   tiedPlayerIds: string[];
   bidResolutions: BidResolution[];
 }

@@ -5,4 +5,5 @@ export * from "./game.js";
 export * from "./lots.js";
 export * from "./random.js";
 export * from "./round.js";
+export * from "./stories.js";
 export * from "./types.js";

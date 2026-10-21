@@ -9,12 +9,13 @@ export type TableLookTarget =
   | { kind: "right" }
   | { kind: "player"; playerId: string };
 
-export type TableGesture = "wave" | "point" | "thinking" | "shrug" | "agree";
+export type TableGesture = "wave" | "point" | "thinking" | "shrug" | "agree" | "like" | "disagree";
 
 export type TablePose = {
   playerId: string;
   lookAt: TableLookTarget;
   gesture: TableGesture | null;
+  showCards?: boolean;
   updatedAt: number;
 };
 
@@ -26,8 +27,8 @@ export type TableSeat = {
   isYou: boolean;
 };
 
-export type TableLot = { nameAr: string; status: string };
-export type TablePoseChange = { lookAt?: TableLookTarget; gesture?: TableGesture | null };
+export type TableLot = { id?: string; nameAr: string; status: string };
+export type TablePoseChange = { lookAt?: TableLookTarget; gesture?: TableGesture | null; showCards?: boolean };
 
 type AvatarModel = {
   playerId: string;
@@ -37,6 +38,8 @@ type AvatarModel = {
   torso: THREE.Group;
   leftArm: THREE.Group;
   rightArm: THREE.Group;
+  rightThumb: THREE.Object3D;
+  cardFan: THREE.Group;
   baseYaw: number;
   index: number;
 };
@@ -46,10 +49,12 @@ const skinTones = [0xc78e66, 0xd19d78, 0xa96f50, 0xe0b38d, 0x966044, 0xbc825f];
 const characterRoles = ["الوريث الحذر", "الموثّقة", "صاحب المزاد", "حافظة الأسرار", "المحامي", "قريب العائلة", "الوريث الطموح", "الراوية", "جامع التحف", "الوسيط الهادئ", "المتشككة", "كاتب الوصية"];
 const gestureLabels: Record<TableGesture, string> = {
   wave: "لوّح",
-  point: "أشر إلى الملف",
+  point: "أشر ناحية اللي باصصله",
   thinking: "فكّر",
   shrug: "ارفع كتفيك",
   agree: "أومئ بالموافقة",
+  like: "اعمل لايك 👍",
+  disagree: "هز راسك لأ",
 };
 
 function roundedColor(index: number): string {
@@ -77,6 +82,35 @@ function addMesh(
   return mesh;
 }
 
+function makePaperTexture(title: string, subtitle = "وثيقة من ملف الميراث"): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 384;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.fillStyle = "#eee2c8";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = "#8b6c42";
+    context.lineWidth = 7;
+    context.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+    context.direction = "rtl";
+    context.textAlign = "center";
+    context.fillStyle = "#51372c";
+    context.font = "bold 40px Tahoma, sans-serif";
+    context.fillText(title.slice(0, 20), canvas.width / 2, 111, canvas.width - 38);
+    context.fillStyle = "#8b6c42";
+    context.font = "24px Tahoma, sans-serif";
+    context.fillText(subtitle, canvas.width / 2, 165, canvas.width - 36);
+    context.fillStyle = "#a74332";
+    context.beginPath();
+    context.arc(canvas.width / 2, 207, 12, 0, Math.PI * 2);
+    context.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 function buildChair(parent: THREE.Object3D, yaw: number): void {
   const wood = material(0x38271e, 0.62);
   const brass = material(0x987443, 0.35, 0.5);
@@ -91,6 +125,46 @@ function buildChair(parent: THREE.Object3D, yaw: number): void {
   }
   addMesh(chair, new THREE.BoxGeometry(0.12, 0.16, 0.86), brass, [-0.54, 0.75, -0.06]);
   addMesh(chair, new THREE.BoxGeometry(0.12, 0.16, 0.86), brass, [0.54, 0.75, -0.06]);
+}
+
+function relationLabel(seat: TableSeat, total: number, offset: number): string {
+  const delta = (seat.seatIndex - offset + total) % total;
+  if (delta === 0) return "إنت";
+  if (delta === 1) return "على شمالك";
+  if (delta === total - 1) return "على يمينك";
+  if (delta === Math.floor(total / 2)) return "مقابلك";
+  return delta < total / 2 ? "ناحيتك الشمال" : "ناحيتك اليمين";
+}
+
+function addNameTag(parent: THREE.Object3D, name: string, role: string, relation: string, color: string): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 120;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.fillStyle = "rgba(16, 24, 19, 0.88)";
+    context.beginPath();
+    context.roundRect(8, 6, 496, 108, 18);
+    context.fill();
+    context.strokeStyle = color;
+    context.lineWidth = 3;
+    context.stroke();
+    context.direction = "rtl";
+    context.textAlign = "center";
+    context.fillStyle = "#fff2d8";
+    context.font = "bold 38px Tahoma, sans-serif";
+    context.fillText(name.slice(0, 20), 256, 53, 460);
+    context.fillStyle = "#e1c587";
+    context.font = "24px Tahoma, sans-serif";
+    context.fillText(`${relation} · ${role}`, 256, 91, 460);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
+  label.position.set(0, 2.42, 0);
+  label.scale.set(2.25, 0.53, 1);
+  parent.add(label);
+  return label;
 }
 
 function buildAvatar(seat: TableSeat, index: number, total: number, offset: number): AvatarModel {
@@ -114,6 +188,8 @@ function buildAvatar(seat: TableSeat, index: number, total: number, offset: numb
   const skin = material(skinTones[index % skinTones.length]!, 0.78);
   const dark = material(0x30231f, 0.95);
   const eye = material(0x201b19, 0.7);
+  const role = characterRoles[seat.seatIndex % characterRoles.length]!;
+  const label = addNameTag(root, seat.displayName, role, relationLabel(seat, total, offset), roundedColor(index));
 
   const torso = new THREE.Group();
   torso.position.y = 0.83;
@@ -159,8 +235,14 @@ function buildAvatar(seat: TableSeat, index: number, total: number, offset: numb
     addMesh(arm, new THREE.CapsuleGeometry(0.13, 0.46, 3, 8), robe, [0, -0.31, 0]);
     addMesh(arm, new THREE.SphereGeometry(0.135, 10, 8), skin, [0, -0.63, 0.015]);
   }
+  const rightThumb = addMesh(rightArm, new THREE.CapsuleGeometry(0.055, 0.16, 3, 6), skin, [0.11, -0.56, 0.035], [0, 0, -0.6]);
+  rightThumb.visible = false;
 
-  return { playerId: seat.playerId, seat, root, head, torso, leftArm, rightArm, baseYaw: yaw, index };
+  const cardFan = new THREE.Group();
+  root.add(cardFan);
+  cardFan.position.set(0, 1.4, -1.22);
+  void label;
+  return { playerId: seat.playerId, seat, root, head, torso, leftArm, rightArm, rightThumb, cardFan, baseYaw: yaw, index };
 }
 
 function createScene(renderer: THREE.WebGLRenderer): {
@@ -223,8 +305,15 @@ function clearGroup(group: THREE.Group): void {
     child.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         object.geometry.dispose();
-        if (Array.isArray(object.material)) object.material.forEach((item) => item.dispose());
-        else object.material.dispose();
+        const disposeMaterial = (item: THREE.Material) => {
+          (item as THREE.Material & { map?: THREE.Texture | null }).map?.dispose();
+          item.dispose();
+        };
+        if (Array.isArray(object.material)) object.material.forEach(disposeMaterial);
+        else disposeMaterial(object.material);
+      } else if (object instanceof THREE.Sprite) {
+        object.material.map?.dispose();
+        object.material.dispose();
       }
     });
   }
@@ -253,17 +342,25 @@ function buildPapers(parent: THREE.Group, lots: TableLot[]): void {
     parent.add(card);
     const open = lots[i]?.status === "open";
     addMesh(card, new THREE.BoxGeometry(0.72, 0.035, 0.5), open ? paper : material(0xb8ad96, 0.95), [0, 0, 0]);
-    addMesh(card, new THREE.BoxGeometry(0.42, 0.008, 0.018), ink, [0, 0.022, -0.1]);
-    addMesh(card, new THREE.BoxGeometry(0.53, 0.008, 0.014), ink, [0, 0.022, -0.035]);
+    if (lots[i]) {
+      const label = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.43), new THREE.MeshBasicMaterial({
+        map: makePaperTexture(lots[i]!.nameAr, lots[i]!.id ? `ملف ${lots[i]!.id}` : "وثيقة من ملف الميراث"),
+        transparent: false,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      }));
+      label.rotation.x = -Math.PI / 2;
+      label.position.y = 0.02;
+      label.receiveShadow = true;
+      card.add(label);
+    }
     addMesh(card, new THREE.CylinderGeometry(0.055, 0.055, 0.022, 12), material(open ? 0xb08b4f : 0x70685a, 0.34, 0.35), [0.25, 0.03, 0.16]);
   }
 }
 
-function buildHandCards(player: AvatarModel | undefined, localHand: number[]): void {
+function buildHandCards(player: AvatarModel | undefined, localHand: number[], localHandLabels: string[]): void {
   if (!player) return;
-  const fan = new THREE.Group();
-  player.root.add(fan);
-  fan.position.set(0, 0.78, 0.78);
+  const fan = player.cardFan;
   const back = material(0x284c3f, 0.55);
   const front = material(0xe6d9ba, 0.9);
   const gold = material(0xc69d59, 0.3, 0.4);
@@ -278,8 +375,14 @@ function buildHandCards(player: AvatarModel | undefined, localHand: number[]): v
     addMesh(card, new THREE.BoxGeometry(0.36, 0.01, 0.54), player.seat.isYou ? back : gold, [0, 0.024, 0]);
     addMesh(card, new THREE.CylinderGeometry(0.07, 0.07, 0.018, 12), gold, [0, 0.04, 0]);
     if (player.seat.isYou && localHand[i] !== undefined) {
-      const mark = material(palette[localHand[i]! % palette.length]!, 0.46);
-      addMesh(card, new THREE.BoxGeometry(0.14, 0.012, 0.08), mark, [0, 0.04, -0.2]);
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(0.41, 0.6), new THREE.MeshBasicMaterial({
+        map: makePaperTexture(localHandLabels[i] ?? `بطاقة ${localHand[i]}`, `كارت ${String(localHand[i]).padStart(2, "0")}`),
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      }));
+      face.rotation.x = -Math.PI / 2;
+      face.position.y = 0.022;
+      card.add(face);
     }
   }
 }
@@ -289,6 +392,7 @@ export function TableScene(props: {
   lots?: TableLot[];
   localPlayerId?: string | undefined;
   localHand?: number[];
+  localHandLabels?: string[];
   poses: Record<string, TablePose>;
   onPose: (change: TablePoseChange) => void;
   cinematic?: boolean;
@@ -384,7 +488,7 @@ export function TableScene(props: {
         const model = buildAvatar(seat, i, total, localIndex);
         avatars.add(model.root);
         avatarModels.set(seat.playerId, model);
-        buildHandCards(model, current.localHand ?? []);
+        buildHandCards(model, current.localHand ?? [], current.localHandLabels ?? []);
       }
     };
 
@@ -452,16 +556,25 @@ export function TableScene(props: {
         if (gesture === "point") { rightZ = 0.15; rightX = 1.28; }
         if (gesture === "thinking") { rightZ = 0.8; rightX = 1.55; }
         if (gesture === "shrug") { leftZ = -1.05; rightZ = 1.05; }
+        if (gesture === "like") { rightZ = 0.25; rightX = 1.36; avatar.rightThumb.visible = true; }
+        else avatar.rightThumb.visible = false;
         const lean = gesture === "point" ? 0.09 : gesture === "thinking" ? -0.025 : Math.sin(elapsed * 1.25 + avatar.index) * 0.012;
         if (gesture === "agree") avatar.head.rotation.x = THREE.MathUtils.lerp(avatar.head.rotation.x, Math.sin(elapsed * 8) * 0.16, delta * 8);
         else avatar.head.rotation.x = THREE.MathUtils.lerp(avatar.head.rotation.x, targetPitch, delta * 4.5);
-        avatar.head.rotation.y = THREE.MathUtils.lerp(avatar.head.rotation.y, targetYaw + idleGlance, delta * 4.5);
+        const disagreement = gesture === "disagree" ? Math.sin(elapsed * 14) * 0.22 : 0;
+        avatar.head.rotation.y = THREE.MathUtils.lerp(avatar.head.rotation.y, targetYaw + idleGlance + disagreement, delta * 4.5);
         avatar.torso.position.y = 0.83 + Math.sin(elapsed * 1.7 + avatar.index) * 0.025;
         avatar.torso.rotation.x = THREE.MathUtils.lerp(avatar.torso.rotation.x, lean, delta * 4.5);
         avatar.leftArm.rotation.z = THREE.MathUtils.lerp(avatar.leftArm.rotation.z, leftZ + wave, delta * 7);
         avatar.rightArm.rotation.z = THREE.MathUtils.lerp(avatar.rightArm.rotation.z, rightZ, delta * 7);
         avatar.leftArm.rotation.x = THREE.MathUtils.lerp(avatar.leftArm.rotation.x, leftX, delta * 7);
         avatar.rightArm.rotation.x = THREE.MathUtils.lerp(avatar.rightArm.rotation.x, rightX, delta * 7);
+        avatar.rightArm.rotation.y = THREE.MathUtils.lerp(avatar.rightArm.rotation.y, gesture === "point" ? targetYaw : 0, delta * 6);
+        const holdingCards = Boolean(pose?.showCards);
+        const cardPosition = holdingCards ? new THREE.Vector3(0, 0.98, -0.03) : new THREE.Vector3(0, 1.4, -1.22);
+        avatar.cardFan.position.lerp(cardPosition, Math.min(1, delta * 5));
+        const cardRotation = holdingCards ? -Math.PI / 2 : 0;
+        avatar.cardFan.rotation.x = THREE.MathUtils.lerp(avatar.cardFan.rotation.x, cardRotation, Math.min(1, delta * 5));
         avatar.root.rotation.y = avatar.baseYaw;
       }
 
@@ -493,6 +606,9 @@ export function TableScene(props: {
           object.geometry.dispose();
           if (Array.isArray(object.material)) object.material.forEach((item) => item.dispose());
           else object.material.dispose();
+        } else if (object instanceof THREE.Sprite) {
+          object.material.map?.dispose();
+          object.material.dispose();
         }
       });
       renderer.dispose();
@@ -528,6 +644,7 @@ export function TableScene(props: {
           <div className="scene-control-row scene-gesture-row">
             <span className="scene-control-label">حركة الشخصية</span>
             {(Object.keys(gestureLabels) as TableGesture[]).map((gesture) => <button key={gesture} type="button" onClick={() => invoke({ gesture })}>{gestureLabels[gesture]}</button>)}
+            <button type="button" aria-pressed={Boolean(props.poses[props.localPlayerId ?? ""]?.showCards)} onClick={() => invoke({ showCards: !props.poses[props.localPlayerId ?? ""]?.showCards })}>{props.poses[props.localPlayerId ?? ""]?.showCards ? "رجّع كروتك للطاولة" : "ارفع كروتك في إيدك"}</button>
           </div>
           <div className="scene-players" aria-label="شخصيات المجلس">
             {props.players.map((player, index) => {

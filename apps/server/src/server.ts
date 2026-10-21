@@ -10,7 +10,12 @@ import {
   createGameState,
   endNegotiation,
   finishNegotiation,
+  offerFormalContract,
+  respondFormalContract,
+  payToCancelPendingPressure,
+  openCardResponseWindow,
   markPlayerConnected,
+  respondToCardEffect,
   resolveRound,
   renegotiateDeclaration,
   skipMissingInputs,
@@ -21,6 +26,9 @@ import {
   withPhaseDeadline,
   RuleError,
   GAME_CONFIG,
+  DEFAULT_STORY_ID,
+  STORY_CATALOG,
+  LOT_CATALOG,
   type GameState,
   type Declaration,
   type FinalAction,
@@ -100,6 +108,10 @@ function parseDeclaration(value: unknown): Declaration {
       throw new RuleError("INVALID_DECLARATION", "الحقل المختار للإخفاء غير صالح");
     }
     declaration.hiddenField = value.hiddenField;
+  }
+  if (value.illusionStance !== undefined) {
+    if (value.illusionStance !== "trust" && value.illusionStance !== "doubt") throw new RuleError("INVALID_DECLARATION", "علامة السراب غير صالحة");
+    declaration.illusionStance = value.illusionStance;
   }
   return declaration;
 }
@@ -213,6 +225,7 @@ function defaultSettings(playerCount = 3): RoomSettings {
     roundLimit: GAME_CONFIG.defaultRoundLimit,
     chatEnabled: false,
     negotiationSeconds: playerCount <= 6 ? 90 : 120,
+    storyId: DEFAULT_STORY_ID,
   };
 }
 
@@ -231,6 +244,10 @@ function validateSettings(value: unknown, current: RoomSettings, playerCount: nu
     throw new RuleError("INVALID_SETTINGS", "مدة التفاوض يجب أن تكون بين 30 و300 ثانية");
   }
   let teamSizes: number[] | undefined;
+  const storyId = value.storyId ?? current.storyId ?? DEFAULT_STORY_ID;
+  if (typeof storyId !== "string" || !STORY_CATALOG.some((story) => story.id === storyId)) {
+    throw new RuleError("INVALID_STORY", "اختار قصة من القصص المتاحة");
+  }
   if (value.teamSizes !== undefined) {
     if (!Array.isArray(value.teamSizes) || !value.teamSizes.every((size) => Number.isInteger(size))) {
       throw new RuleError("INVALID_TEAMS", "تكوين الفرق غير صالح");
@@ -247,13 +264,14 @@ function validateSettings(value: unknown, current: RoomSettings, playerCount: nu
     roundLimit: roundLimit as number,
     chatEnabled,
     negotiationSeconds: negotiationSeconds as number,
+    storyId,
     ...(teamSizes === undefined ? {} : { teamSizes }),
   };
 }
 
 function publicGameSnapshot(game: GameState): Record<string, unknown> {
   const revealDeclarations = game.phase !== "declaration";
-  const revealActions = ["round-summary", "complete"].includes(game.phase);
+  const revealActions = ["card-response", "round-summary", "complete"].includes(game.phase);
   return {
     gameId: game.gameId,
     mode: game.mode,
@@ -293,6 +311,15 @@ function publicGameSnapshot(game: GameState): Record<string, unknown> {
       actorPlayerId: item.actorPlayerId,
       payload: item.payload,
     })),
+    ...(game.phase === "card-response" ? { cardResponses: (game.cardResponses ?? []).map((response) => ({
+      sourcePlayerId: response.sourcePlayerId,
+      targetPlayerId: response.targetPlayerId,
+      cardId: response.cardId,
+      effectCardId: response.effectCardId,
+      resolved: response.resolved,
+    })) } : {}),
+    ...(game.formalContract ? { formalContract: game.formalContract } : {}),
+    ...(game.pendingPressureEffects?.length ? { pendingPressureEffects: game.pendingPressureEffects } : {}),
   };
 }
 
@@ -310,6 +337,19 @@ function privateGameSnapshot(game: GameState, playerId: string): Record<string, 
     action: player.action,
     forcedAnnouncement: player.forcedAnnouncement,
     events: game.events.filter((item) => item.visibility === "owner-only" && item.ownerPlayerId === playerId).map((item) => item.payload),
+    cardPrompts: (game.cardResponses ?? []).filter((item) => item.targetPlayerId === playerId && !item.resolved).map((item) => ({
+      sourcePlayerId: item.sourcePlayerId,
+      sourceName: game.players.find((source) => source.id === item.sourcePlayerId)?.displayName ?? "لاعب",
+      cardId: item.cardId,
+      effectCardId: item.effectCardId,
+    })),
+    ...(player.hand.includes(28) && game.roundIndex < game.settings.roundLimit && game.roundIndex < GAME_CONFIG.maximumRoundLimit && game.finalRoundIndex !== game.roundIndex ? { nextRoundLotChoices: game.lotDeck.slice(game.lotDeckCursor, game.lotDeckCursor + 2).map((id) => ({
+      id,
+      nameAr: LOT_CATALOG.find((lot) => lot.id === id)?.nameAr ?? id,
+    })) } : {}),
+    ...(game.formalContract?.status === "pending" && game.formalContract.targetPlayerId === playerId
+      ? { contractPrompt: game.formalContract }
+      : {}),
   };
 }
 
@@ -398,6 +438,7 @@ export function createGameServer(options: ServerOptions = {}) {
   }
 
   function phaseDuration(game: GameState): number {
+    if (game.phase === "card-response") return 25_000;
     return game.phase === "negotiation" ? game.settings.negotiationSeconds * 1000 : DEFAULT_PHASE_MS;
   }
 
@@ -553,10 +594,11 @@ export function createGameServer(options: ServerOptions = {}) {
         lookAt = { kind: "player", playerId: rawLook.playerId };
       }
 
-      const gestures = new Set(["wave", "point", "thinking", "shrug", "agree"]);
+      const gestures = new Set(["wave", "point", "thinking", "shrug", "agree", "like", "disagree"]);
       const gesture = typeof raw.gesture === "string" && gestures.has(raw.gesture) ? raw.gesture : null;
+      const showCards = raw.showCards === true;
       room.lastActivityAt = now;
-      io.to(room.code).emit("TABLE_ACTION", { playerId: player.id, lookAt, gesture, updatedAt: now });
+      io.to(room.code).emit("TABLE_ACTION", { playerId: player.id, lookAt, gesture, showCards, updatedAt: now });
     });
 
     socket.on("CREATE_ROOM", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "CREATE_ROOM", raw, ack, "lobby", (envelope) => {
@@ -729,6 +771,33 @@ export function createGameServer(options: ServerOptions = {}) {
       return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room) });
     }));
 
+    socket.on("OFFER_CONTRACT", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "OFFER_CONTRACT", raw, ack, "game", (envelope) => {
+      const { room, player } = ensureCurrent(socket, envelope, "game");
+      if (!room.game) throw new RuleError("GAME_NOT_STARTED", "اللعبة لسه ما بدأتش");
+      if (typeof envelope.targetPlayerId !== "string" || !isRecord(envelope.condition)) throw new RuleError("INVALID_CONTRACT", "عرض العقد ناقص");
+      const rawCondition = envelope.condition;
+      let condition;
+      if (rawCondition.kind === "no-bid" && typeof rawCondition.playerId === "string" && typeof rawCondition.lotId === "string") {
+        condition = { kind: "no-bid" as const, playerId: rawCondition.playerId, lotId: rawCondition.lotId };
+      } else if (rawCondition.kind === "different-lots") {
+        condition = { kind: "different-lots" as const };
+      } else if (rawCondition.kind === "transfer" && typeof rawCondition.fromPlayerId === "string" && typeof rawCondition.toPlayerId === "string" && typeof rawCondition.amount === "number") {
+        condition = { kind: "transfer" as const, fromPlayerId: rawCondition.fromPlayerId, toPlayerId: rawCondition.toPlayerId, amount: rawCondition.amount };
+      } else throw new RuleError("INVALID_CONTRACT", "نوع شرط العقد مش مدعوم");
+      room.game = offerFormalContract(room.game, player.id, envelope.targetPlayerId, condition);
+      publish(room);
+      return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room), private: makePrivateSnapshot(room, player) });
+    }));
+
+    socket.on("RESPOND_CONTRACT", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "RESPOND_CONTRACT", raw, ack, "game", (envelope) => {
+      const { room, player } = ensureCurrent(socket, envelope, "game");
+      if (!room.game) throw new RuleError("GAME_NOT_STARTED", "اللعبة لسه ما بدأتش");
+      if (typeof envelope.accept !== "boolean") throw new RuleError("INVALID_CONTRACT", "اختار تقبل العقد ولا ترفضه");
+      room.game = respondFormalContract(room.game, player.id, envelope.accept);
+      publish(room);
+      return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room), private: makePrivateSnapshot(room, player) });
+    }));
+
     socket.on("RENEGOTIATE_DECLARATION", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "RENEGOTIATE_DECLARATION", raw, ack, "game", (envelope) => {
       const { room, player } = ensureCurrent(socket, envelope, "game");
       if (!room.game) throw new RuleError("GAME_NOT_STARTED", "اللعبة لم تبدأ");
@@ -747,9 +816,41 @@ export function createGameServer(options: ServerOptions = {}) {
       const before = room.game.phase;
       let next = submitFinalAction(room.game, player.id, parseFinalAction(envelope.action));
       next = phaseTransitionDeadline(room, before, next);
+      if (next.phase === "resolution") {
+        next = openCardResponseWindow(next);
+        if (next.phase === "card-response") next = updateGameDeadline(room, next);
+        else next = resolveRound(next).state;
+      }
+      room.game = next;
+      room.status = next.phase === "complete" ? "complete" : "playing";
+      publish(room);
+      return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room), private: makePrivateSnapshot(room, player) });
+    }));
+
+    socket.on("RESPOND_CARD_EFFECT", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "RESPOND_CARD_EFFECT", raw, ack, "game", (envelope) => {
+      const { room, player } = ensureCurrent(socket, envelope, "game");
+      if (!room.game) throw new RuleError("GAME_NOT_STARTED", "اللعبة لسه ما بدأتش");
+      if (typeof envelope.sourcePlayerId !== "string" || typeof envelope.cardId !== "number" || typeof envelope.choice !== "string") {
+        throw new RuleError("INVALID_CARD_RESPONSE", "رد الكارت ناقص");
+      }
+      if (!["pay", "reveal-card", "reveal-category", "suspicion", "reflect", "allow", "defer", "cancel"].includes(envelope.choice)) throw new RuleError("INVALID_CARD_RESPONSE", "اختيار الرد مش مفهوم");
+      if (envelope.revealedCardId !== undefined && typeof envelope.revealedCardId !== "number") throw new RuleError("INVALID_CARD_RESPONSE", "رقم الكارت المكشوف مش صالح");
+      const before = room.game.phase;
+      let next = respondToCardEffect(room.game, player.id, envelope.sourcePlayerId, envelope.cardId, envelope.choice as "pay" | "reveal-card" | "reveal-category" | "suspicion" | "reflect" | "allow" | "defer" | "cancel", envelope.revealedCardId as number | undefined);
+      next = phaseTransitionDeadline(room, before, next);
       if (next.phase === "resolution") next = resolveRound(next).state;
       room.game = next;
       room.status = next.phase === "complete" ? "complete" : "playing";
+      publish(room);
+      return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room), private: makePrivateSnapshot(room, player) });
+    }));
+
+    socket.on("CANCEL_PENDING_PRESSURE", (raw: unknown, ack?: (result: AckResult) => void) => request(socket, "CANCEL_PENDING_PRESSURE", raw, ack, "game", (envelope) => {
+      const { room, player } = ensureCurrent(socket, envelope, "game");
+      if (!room.game || typeof envelope.sourcePlayerId !== "string" || typeof envelope.sourceCardId !== "number") {
+        throw new RuleError("INVALID_REQUEST", "بيانات التأثير المؤجل مش كاملة");
+      }
+      room.game = payToCancelPendingPressure(room.game, player.id, envelope.sourcePlayerId, envelope.sourceCardId);
       publish(room);
       return makeResponse(envelope.requestId, { room: publicRoomSnapshot(room), private: makePrivateSnapshot(room, player) });
     }));

@@ -30,8 +30,21 @@ export function calculateEffectiveBid(entry: BidEntry): { effectiveBid: number; 
  * remaining tie has no winner. Every non-withdrawn competitor pays their base
  * bid, including losing bids.
  */
-export function resolveLotAuction(lotId: string, bids: readonly BidEntry[]): LotAuctionResult {
+export function resolveLotAuction(
+  lotId: string,
+  bids: readonly BidEntry[],
+  tieBreakCardPlayerIds: readonly string[] = [],
+): LotAuctionResult {
   const eligible = bids.filter((bid) => bid.lotId === lotId && !bid.withdrawn);
+  const withdrawn = bids.filter((bid) => bid.lotId === lotId && bid.withdrawn).map((bid) => ({
+    playerId: bid.playerId,
+    lotId,
+    baseBid: bid.baseBid,
+    effectiveBid: 0,
+    influenceAfter: bid.influence,
+    won: false,
+    calculation: ["انسحب صاحب العرض ورجعله عرضه الأساسي"],
+  }));
   for (const bid of eligible) {
     if (!Number.isInteger(bid.baseBid) || bid.baseBid < GAME_CONFIG.baseBidMinimum || bid.baseBid > GAME_CONFIG.baseBidMaximum) {
       throw new Error(`Invalid base bid for ${bid.playerId}`);
@@ -46,21 +59,30 @@ export function resolveLotAuction(lotId: string, bids: readonly BidEntry[]): Lot
     ...calculateEffectiveBid(bid),
     influenceAfter: bid.influence - bid.baseBid,
   }));
-  if (calculated.length === 0) return { lotId, tiedPlayerIds: [], bidResolutions: [] };
+  if (calculated.length === 0) return { lotId, tiedPlayerIds: [], bidResolutions: withdrawn };
 
   const highest = Math.max(...calculated.map((item) => item.effectiveBid));
-  let finalists = calculated.filter((item) => item.effectiveBid === highest);
+  const originalFinalists = calculated.filter((item) => item.effectiveBid === highest);
+  let finalists = originalFinalists;
   if (finalists.length > 1) {
     const fewestSeals = Math.min(...finalists.map((item) => item.bid.seals));
     finalists = finalists.filter((item) => item.bid.seals === fewestSeals);
   }
-  const winner = finalists.length === 1 ? finalists[0] : undefined;
+  let cardTieBreakWinner: (typeof finalists)[number] | undefined;
+  if (finalists.length > 1) {
+    const tieBreakCardPlayers = new Set(tieBreakCardPlayerIds);
+    cardTieBreakWinner = finalists.find((item) => tieBreakCardPlayers.has(item.bid.playerId)
+      && originalFinalists.some((other) => other.bid.seals > item.bid.seals)
+      && item.bid.influence - item.bid.baseBid >= 1);
+  }
+  const winner = finalists.length === 1 ? finalists[0] : cardTieBreakWinner;
   const tiedPlayerIds = winner ? [] : finalists.map((item) => item.bid.playerId);
   return {
     lotId,
     ...(winner ? { winnerPlayerId: winner.bid.playerId } : {}),
+    ...(cardTieBreakWinner ? { cardTieBreakPlayerId: cardTieBreakWinner.bid.playerId } : {}),
     tiedPlayerIds,
-    bidResolutions: calculated.map((item) => ({
+    bidResolutions: [...calculated.map((item) => ({
       playerId: item.bid.playerId,
       lotId,
       baseBid: item.bid.baseBid,
@@ -68,7 +90,7 @@ export function resolveLotAuction(lotId: string, bids: readonly BidEntry[]): Lot
       influenceAfter: item.influenceAfter,
       won: item.bid.playerId === winner?.bid.playerId,
       calculation: item.calculation,
-    })),
+    })), ...withdrawn],
   };
 }
 
