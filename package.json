@@ -1,0 +1,30 @@
+{
+  "name": "akher-tawqee",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build --workspace @akher-tawqee/game-engine && concurrently -k -n server,web \"npm:dev --workspace=apps/server\" \"npm:dev --workspace=apps/web\"",
+    "build": "npm run build --workspace @akher-tawqee/game-engine && npm run build --workspace=apps/server && npm run build --workspace=apps/web",
+    "start": "npm run start --workspace=apps/server",
+    "typecheck": "npm run build --workspace=@akher-tawqee/game-engine && npm run typecheck --workspace=apps/server && npm run typecheck --workspace=apps/web",
+    "test": "npm run build --workspace=@akher-tawqee/game-engine && vitest run",
+    "test:e2e": "playwright test",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.2",
+    "concurrently": "^9.2.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

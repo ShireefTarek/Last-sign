@@ -1,0 +1,27 @@
+# آخر توقيع | AKHER TAWQEE
+
+لعبة مزايدة ومفاوضة جماعية بالعربية. يمكن إنشاء الغرف والانضمام إليها ولعب مباراة من ست جولات عبر خادم Socket.IO حقيقي. تسع وعشرون بطاقة قابلة للعب حالياً؛ بقية البطاقات ونمط الفرق قيد التنفيذ. راجع [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) للحالة التي اختُبرت، و[`PLAN.md`](PLAN.md) للمراحل الباقية.
+
+## المتطلبات
+
+- Node.js 24 LTS وnpm 11.
+- لا تحتاج اللعبة المحلية إلى حسابات أو مفاتيح سرية.
+
+## أوامر المشروع
+
+من مجلد المشروع:
+
+```sh
+bash scripts/codex-install.sh
+npm run dev
+```
+
+تفتح الواجهة على `http://localhost:5173`، ويعمل الخادم على `http://localhost:4000` مع مسار صحة `/health`. للتحقق استخدم `npm run typecheck` و`npm test` و`npm run test:e2e`. للبناء والتشغيل الإنتاجي استخدم `npm run build` ثم `npm start`؛ يخدم خادم Node.js الواجهة والاتصال الفوري من الأصل نفسه.
+
+## القرارات والقواعد
+
+بيانات البطاقات الستين موجودة في المحرك؛ المؤثرات المكتملة والمختبرة موضحة في [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) و[`docs/card-matrix.md`](docs/card-matrix.md). القرارات المفتوحة موثقة في [`docs/rules-decisions.md`](docs/rules-decisions.md). نمط الفرق معطّل حتى يكتمل نظام الميزانية المشتركة.
+
+## النشر
+
+يحتاج النشر إلى خادم Node.js طويل العمر يدعم HTTPS وWebSocket. نشر ملفات الواجهة الثابتة وحدها لا يشغّل اللعبة متعددة اللاعبين.
